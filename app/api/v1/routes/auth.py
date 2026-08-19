@@ -1,7 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+"""
+app/api/v1/routes/auth.py
+
+Module 06 updates:
+  - Rate limiting applied to login and refresh endpoints (brute-force protection).
+  - AUTH_EVENT audit log entries written for login, logout, and failed auth.
+  - logout now accepts an optional refresh_token body to do single-device sign-out.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.middleware.rate_limiter import limiter, LIMIT_AUTH
+from app.models.audit_log import AuditEventType
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
@@ -10,6 +21,7 @@ from app.schemas.auth import (
     TokenResponse,
     UserResponse,
 )
+from app.services import audit_service
 from app.services.auth_service import (
     login_user,
     logout_user,
@@ -29,7 +41,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user account",
 )
-def register(data: RegisterRequest, db: Session = Depends(get_db)):
+def register(request: Request, data: RegisterRequest, db: Session = Depends(get_db)):
     """
     Create a new user (patient, doctor, or admin).
     After registration, use POST /auth/login to obtain tokens.
@@ -46,21 +58,47 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     response_model=TokenResponse,
     summary="Login and obtain JWT tokens",
 )
-def login(data: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit(LIMIT_AUTH)
+def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     """
     Authenticate with email + password.
     Returns an access token (short-lived) and refresh token (long-lived).
     Include the access token in subsequent requests:
         Authorization: Bearer <access_token>
+
+    Rate limited: 10 requests / minute per IP.
     """
+    user_agent = request.headers.get("user-agent")
     try:
-        access_token, refresh_token, _ = login_user(db, data.email, data.password)
+        access_token, refresh_token, _ = login_user(
+            db, data.email, data.password, device_hint=user_agent
+        )
+        # Fetch user for audit log (login_user doesn't return User object directly)
+        from app.models.user import User as UserModel
+        user = db.query(UserModel).filter(UserModel.email == data.email).first()
+        audit_service.log_event(
+            db=db,
+            event_type=AuditEventType.AUTH_LOGIN,
+            resource_type="user",
+            resource_id=user.id if user else None,
+            actor=user,
+            payload={"email": data.email},
+            request=request,
+        )
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=settings.access_token_expire_minutes * 60,
         )
     except ValueError as e:
+        # Log failed login attempts (no actor since auth failed)
+        audit_service.log_event(
+            db=db,
+            event_type=AuditEventType.AUTH_LOGIN_FAILED,
+            resource_type="user",
+            payload={"email": data.email, "reason": str(e)},
+            request=request,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 
@@ -69,14 +107,24 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     response_model=TokenResponse,
     summary="Refresh access token",
 )
-def refresh(data: RefreshRequest, db: Session = Depends(get_db)):
+@limiter.limit(LIMIT_AUTH)
+def refresh(request: Request, data: RefreshRequest, db: Session = Depends(get_db)):
     """
     Exchange a valid refresh token for a new access + refresh token pair.
     Token rotation: the old refresh token is invalidated immediately.
+
+    Rate limited: 10 requests / minute per IP.
     """
     try:
         access_token, new_refresh_token, _ = refresh_access_token(
             db, data.refresh_token
+        )
+        audit_service.log_event(
+            db=db,
+            event_type=AuditEventType.AUTH_REFRESH,
+            resource_type="refresh_token",
+            payload={"rotated": True},
+            request=request,
         )
         return TokenResponse(
             access_token=access_token,
@@ -93,14 +141,32 @@ def refresh(data: RefreshRequest, db: Session = Depends(get_db)):
     summary="Logout and invalidate tokens",
 )
 def logout(
+    request: Request,
+    data: RefreshRequest | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Invalidate the current user's refresh token.
-    The access token will expire naturally (within 30 min).
+    Revoke refresh token(s) to sign out.
+
+    - If a `refresh_token` body is provided: only that token is revoked (single-device logout).
+    - If omitted or body is empty: all active refresh tokens for the user are revoked
+      (sign out all devices).
+
+    Access tokens will expire naturally within the configured window (default: 30 min).
     """
-    logout_user(db, current_user)
+    raw_token = data.refresh_token if data else None
+    logout_user(db, current_user, raw_refresh_token=raw_token)
+
+    audit_service.log_event(
+        db=db,
+        event_type=AuditEventType.AUTH_LOGOUT,
+        resource_type="user",
+        resource_id=current_user.id,
+        actor=current_user,
+        payload={"single_device": raw_token is not None},
+        request=request,
+    )
 
 
 @router.get(

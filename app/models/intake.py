@@ -13,6 +13,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.patient import Patient
+    from app.models.case_assignment import CaseAssignment
 
 
 class SeverityHint(str, enum.Enum):
@@ -82,6 +83,21 @@ class SymptomReport(Base):
     specialist_recommendation: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ai_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # ── Routing Results (populated by Module 03) ─────────────────────────────
+    routing_decision: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Module 03: Full RoutingDecision JSON (specialist, confidence, method, reasoning, etc.)",
+    )
+
+    # ── Assignment (populated by Module 04) ──────────────────────────────────
+    assigned_doctor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("doctors.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="Module 04: Denormalised FK to the currently active doctor assignment.",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -94,3 +110,8 @@ class SymptomReport(Base):
 
     # ── Relationships ──────────────────────────────────────────────────────────
     patient: Mapped[Patient] = relationship("Patient", back_populates="symptom_reports")
+    case_assignments: Mapped[list[CaseAssignment]] = relationship(
+        "CaseAssignment",
+        back_populates="report",
+        cascade="all, delete-orphan",
+    )

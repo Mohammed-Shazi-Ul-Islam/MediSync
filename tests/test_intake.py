@@ -70,11 +70,11 @@ class TestAuth:
             headers={"Authorization": f"Bearer {registered_patient['access_token']}"},
         )
         assert response.status_code == 200
-        assert response.json()["email"] == "patient@medisync.test"
+        assert response.json()["email"] == "patient@medisync.io"
 
     def test_protected_route_without_token(self, client):
         response = client.get("/api/v1/auth/me")
-        assert response.status_code == 403  # HTTPBearer returns 403 when no credentials
+        assert response.status_code == 401  # HTTPBearer returns 401 when Authorization header is missing
 
 
 # ── Patient Profile Tests ──────────────────────────────────────────────────────
@@ -157,17 +157,20 @@ class TestPatientProfile:
 
 # ── Intake / Symptom Report Tests ──────────────────────────────────────────────
 
+from unittest.mock import patch, MagicMock
+
 class TestSymptomIntake:
     def test_submit_report_free_text(self, client, patient_with_profile):
-        response = client.post(
-            "/api/v1/intake",
-            json={
-                "raw_text": "I have severe chest pain and shortness of breath since 2 hours",
-                "severity_hint": "severe",
-                "duration": "2 hours",
-            },
-            headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
-        )
+        with patch("app.workers.tasks.analyze_symptom_report.delay", return_value=MagicMock(id="fake-task-id")):
+            response = client.post(
+                "/api/v1/intake",
+                json={
+                    "raw_text": "I have severe chest pain and shortness of breath since 2 hours",
+                    "severity_hint": "severe",
+                    "duration": "2 hours",
+                },
+                headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
+            )
         assert response.status_code == 202
         data = response.json()
         assert data["status"] in ["pending", "processing"]
@@ -176,20 +179,21 @@ class TestSymptomIntake:
         assert "id" in data
 
     def test_submit_report_with_structured_symptoms(self, client, patient_with_profile):
-        response = client.post(
-            "/api/v1/intake",
-            json={
-                "raw_text": "Headache and fever since yesterday",
-                "structured_symptoms": {
-                    "symptoms": ["headache", "fever"],
-                    "location": "head",
-                    "temperature": "101F",
+        with patch("app.workers.tasks.analyze_symptom_report.delay", return_value=MagicMock(id="fake-task-id")):
+            response = client.post(
+                "/api/v1/intake",
+                json={
+                    "raw_text": "Headache and fever since yesterday",
+                    "structured_symptoms": {
+                        "symptoms": ["headache", "fever"],
+                        "location": "head",
+                        "temperature": "101F",
+                    },
+                    "severity_hint": "moderate",
+                    "duration": "1 day",
                 },
-                "severity_hint": "moderate",
-                "duration": "1 day",
-            },
-            headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
-        )
+                headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
+            )
         assert response.status_code == 202
         data = response.json()
         assert data["structured_symptoms"]["symptoms"] == ["headache", "fever"]
@@ -197,18 +201,19 @@ class TestSymptomIntake:
     def test_submit_report_too_short(self, client, patient_with_profile):
         response = client.post(
             "/api/v1/intake",
-            json={"raw_text": "Pain"},  # Too short
+            json={"raw_text": "Pain"},  # Too short — fails Pydantic validation before hitting Celery
             headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
         )
         assert response.status_code == 422
 
     def test_get_report_status(self, client, patient_with_profile):
-        # Submit a report
-        submit = client.post(
-            "/api/v1/intake",
-            json={"raw_text": "I have been experiencing dizziness and nausea all morning"},
-            headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
-        )
+        # Submit a report (mock Celery dispatch)
+        with patch("app.workers.tasks.analyze_symptom_report.delay", return_value=MagicMock(id="fake-task-id")):
+            submit = client.post(
+                "/api/v1/intake",
+                json={"raw_text": "I have been experiencing dizziness and nausea all morning"},
+                headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
+            )
         report_id = submit.json()["id"]
 
         # Poll for status
@@ -220,16 +225,17 @@ class TestSymptomIntake:
         assert response.json()["id"] == report_id
 
     def test_list_my_reports(self, client, patient_with_profile):
-        # Submit 2 reports
-        for text in [
-            "I have a persistent cough and mild fever for 3 days",
-            "My left knee has been hurting after running yesterday",
-        ]:
-            client.post(
-                "/api/v1/intake",
-                json={"raw_text": text},
-                headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
-            )
+        # Submit 2 reports (mock Celery dispatch)
+        with patch("app.workers.tasks.analyze_symptom_report.delay", return_value=MagicMock(id="fake-task-id")):
+            for text in [
+                "I have a persistent cough and mild fever for 3 days",
+                "My left knee has been hurting after running yesterday",
+            ]:
+                client.post(
+                    "/api/v1/intake",
+                    json={"raw_text": text},
+                    headers={"Authorization": f"Bearer {patient_with_profile['access_token']}"},
+                )
 
         response = client.get(
             "/api/v1/intake/my-reports",
@@ -242,9 +248,11 @@ class TestSymptomIntake:
 
     def test_submit_without_patient_profile(self, client, registered_patient):
         """Should return 404 if no patient profile exists yet."""
-        response = client.post(
-            "/api/v1/intake",
-            json={"raw_text": "I have severe chest pain since this morning"},
-            headers={"Authorization": f"Bearer {registered_patient['access_token']}"},
-        )
+        with patch("app.workers.tasks.analyze_symptom_report.delay", return_value=MagicMock(id="fake-task-id")):
+            response = client.post(
+                "/api/v1/intake",
+                json={"raw_text": "I have severe chest pain since this morning"},
+                headers={"Authorization": f"Bearer {registered_patient['access_token']}"},
+            )
         assert response.status_code == 404
+

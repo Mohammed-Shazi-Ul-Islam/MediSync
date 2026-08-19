@@ -50,6 +50,7 @@ class SymptomReportResponse(BaseModel):
     Full report response — status field allows client to poll progress:
       pending → processing → triaged → closed
     urgency_level and specialist_recommendation are null until Module 02 runs.
+    assigned_doctor_id is null until Module 04 assigns the case to a doctor.
     """
     id: uuid.UUID
     patient_id: uuid.UUID
@@ -62,10 +63,13 @@ class SymptomReportResponse(BaseModel):
     urgency_level: str | None
     specialist_recommendation: str | None
     ai_analysis: dict | None
+    routing_decision: dict | None          # Module 03 — populated after routing
+    assigned_doctor_id: uuid.UUID | None   # Module 04 — populated after assignment
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
 
 
 class SymptomReportList(BaseModel):

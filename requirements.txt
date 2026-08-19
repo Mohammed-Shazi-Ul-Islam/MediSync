@@ -21,16 +21,22 @@ python-multipart==0.0.9
 celery==5.4.0
 redis==5.0.8
 
-# ─── AI / LLM (Module 02 will use these fully) ────────────────────────────────
-langchain==0.2.11
-langchain-google-genai==1.0.8
-google-generativeai==0.7.2
+# ─── AI / LLM (Module 02) ──────────────────────────────────────────────────────
+langchain==0.2.16
+langchain-google-genai==1.0.10
+langchain-community==0.2.16
+langchain-chroma==0.1.4
+# google-generativeai version resolved by langchain-google-genai (requires >=0.7.0,<0.8.0)
 
 # ─── Vector DB (Module 03) ────────────────────────────────────────────────────
-chromadb==0.5.5
+# chromadb 0.5.4 and 0.5.5 are excluded by langchain-chroma 0.1.4
+chromadb==0.5.3
 
 # ─── Notifications (Module 04) ────────────────────────────────────────────────
 twilio==9.2.4
+
+# ─── Rate Limiting (Module 06) ────────────────────────────────────────────────
+slowapi==0.1.9
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
 pytest==8.3.2
@@ -39,3 +45,4 @@ pytest-asyncio==0.23.8
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
+

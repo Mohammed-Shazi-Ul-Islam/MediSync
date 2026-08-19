@@ -31,6 +31,22 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── One-shot Alembic migration runner ──────────────────────────────────────
+  # Runs `alembic upgrade head` once, then exits (restart: "no").
+  # api + worker wait for this to complete successfully before starting.
+  migrate:
+    build: .
+    container_name: medisync_migrate
+    command: alembic upgrade head
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   # ── FastAPI Application ─────────────────────────────────────────────────────
   api:
     build: .
@@ -47,6 +63,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # ── Celery Worker (triage queue) ────────────────────────────────────────────
@@ -63,6 +81,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
